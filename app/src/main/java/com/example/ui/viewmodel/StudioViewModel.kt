@@ -265,20 +265,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     /**
      * Synthesizes audio for an individual scene block.
      */
-    fun synthesizeScene(sceneId: String) {
+    /**
+     * Synthesizes audio for an individual scene block with autoPlay option.
+     */
+    fun synthesizeScene(sceneId: String, autoPlay: Boolean = false) {
         val scene = _sceneBlocks.value.firstOrNull { it.id == sceneId } ?: return
         viewModelScope.launch {
             updateSceneBlock(scene.copy(isGenerating = true, errorMessage = null))
-            val result = audioEngine.synthesizeScene(scene)
+            val apiKey = vaultManager.getApiKey()
+            val result = audioEngine.synthesizeScene(scene, apiKey, geminiService)
             result.onSuccess { file ->
-                updateSceneBlock(
-                    scene.copy(
-                        isGenerating = false,
-                        audioFilePath = file.absolutePath,
-                        durationMs = file.length() / 48
-                    )
+                val updated = scene.copy(
+                    isGenerating = false,
+                    audioFilePath = file.absolutePath,
+                    durationMs = file.length() / 48
                 )
-                _snackbarMessage.value = "Scene ${scene.orderIndex} audio synthesized"
+                updateSceneBlock(updated)
+                _snackbarMessage.value = "Scene ${scene.orderIndex} audio ready"
+                if (autoPlay) {
+                    audioEngine.playAudio(file, scene.id, scene.text)
+                }
             }.onFailure { err ->
                 updateSceneBlock(scene.copy(isGenerating = false, errorMessage = err.message))
                 _snackbarMessage.value = "Failed: ${err.message}"
@@ -296,11 +302,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        val apiKey = vaultManager.getApiKey()
         viewModelScope.launch {
             for ((index, scene) in scenes.withIndex()) {
                 _batchGeneratingProgress.value = "Synthesizing scene ${index + 1} of ${scenes.size}..."
                 updateSceneBlock(scene.copy(isGenerating = true, errorMessage = null))
-                val result = audioEngine.synthesizeScene(scene)
+                val result = audioEngine.synthesizeScene(scene, apiKey, geminiService)
                 result.onSuccess { file ->
                     updateSceneBlock(
                         scene.copy(
@@ -319,12 +326,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Play or pause a specific scene audio.
+     * Play or pause a specific scene audio. Auto-synthesizes and plays immediately if not yet rendered.
      */
     fun togglePlayScene(scene: SceneBlock) {
         val path = scene.audioFilePath
         if (path == null || !File(path).exists()) {
-            synthesizeScene(scene.id)
+            synthesizeScene(scene.id, autoPlay = true)
             return
         }
 
@@ -333,7 +340,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         } else if (audioEngine.activePlayingId.value == scene.id) {
             audioEngine.resumeAudio()
         } else {
-            audioEngine.playAudio(File(path), scene.id)
+            audioEngine.playAudio(File(path), scene.id, scene.text)
         }
     }
 
@@ -376,10 +383,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             _isRenderingMaster.value = true
+            val apiKey = vaultManager.getApiKey()
             val result = audioEngine.renderMasterWav(
                 scenes = scenes,
                 fxConfig = _audioFxConfig.value,
-                projectTitle = _projectTitle.value
+                projectTitle = _projectTitle.value,
+                apiKey = apiKey,
+                geminiService = geminiService
             )
             _isRenderingMaster.value = false
 
@@ -608,7 +618,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 voiceActor = VoiceActor.CHARON
             )
             val ttsStart = System.currentTimeMillis()
-            val synthResult = audioEngine.synthesizeScene(testScene)
+            val synthResult = audioEngine.synthesizeScene(testScene, apiKey, geminiService)
             val ttsLatency = System.currentTimeMillis() - ttsStart
 
             synthResult.onSuccess { file ->

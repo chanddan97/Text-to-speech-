@@ -1,5 +1,6 @@
 package com.example.data.gemini
 
+import com.example.data.audio.WavAudioUtil
 import com.example.data.model.EmotionPreset
 import com.example.data.model.SceneBlock
 import com.example.data.model.VoiceActor
@@ -293,5 +294,93 @@ Return ONLY a valid JSON array of objects with the exact keys:
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Synthesizes emotional speech audio via Gemini 2.0 Flash Audio output.
+     */
+    suspend fun synthesizeSpeechAudio(
+        apiKey: String,
+        text: String,
+        voiceActor: VoiceActor,
+        emotion: EmotionPreset
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext Result.failure(Exception("No API key configured"))
+
+        val geminiVoiceName = when (voiceActor) {
+            VoiceActor.CHARON -> "Charon"
+            VoiceActor.FENRIR -> "Fenrir"
+            VoiceActor.PUCK -> "Puck"
+            VoiceActor.ORUS -> "Charon"
+            VoiceActor.KORE -> "Kore"
+            VoiceActor.AOEDE -> "Aoede"
+        }
+
+        val requestJson = JSONObject().apply {
+            put("contents", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("text", "Read this Bengali dialogue clearly with deep ${emotion.displayName} emotion: $text")
+                        })
+                    })
+                })
+            })
+            put("generationConfig", JSONObject().apply {
+                put("responseModalities", JSONArray().apply { put("AUDIO") })
+                put("speechConfig", JSONObject().apply {
+                    put("voiceConfig", JSONObject().apply {
+                        put("prebuiltVoiceConfig", JSONObject().apply {
+                            put("voiceName", geminiVoiceName)
+                        })
+                    })
+                })
+            })
+        }
+
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey"
+        val req = Request.Builder()
+            .url(url)
+            .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        try {
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Gemini audio returned HTTP ${response.code}"))
+                }
+                val body = response.body?.string() ?: ""
+                val json = JSONObject(body)
+                val candidates = json.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
+                    val parts = candidates.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts")
+                    if (parts != null && parts.length() > 0) {
+                        val inlineData = parts.getJSONObject(0).optJSONObject("inlineData")
+                        val base64Data = inlineData?.optString("data") ?: ""
+                        if (base64Data.isNotBlank()) {
+                            val audioBytes = android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                            val mime = inlineData?.optString("mimeType") ?: ""
+                            val wavBytes = if (mime.contains("pcm", ignoreCase = true) || !isWavFile(audioBytes)) {
+                                WavAudioUtil.wrapPcmToWav(audioBytes, 24000, 1)
+                            } else {
+                                audioBytes
+                            }
+                            return@withContext Result.success(wavBytes)
+                        }
+                    }
+                }
+                Result.failure(Exception("No audio bytes received from Gemini"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun isWavFile(bytes: ByteArray): Boolean {
+        if (bytes.size < 12) return false
+        return bytes[0] == 'R'.code.toByte() &&
+               bytes[1] == 'I'.code.toByte() &&
+               bytes[2] == 'F'.code.toByte() &&
+               bytes[3] == 'F'.code.toByte()
     }
 }
