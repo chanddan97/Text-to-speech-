@@ -1,0 +1,6 @@
+{
+  "name": "CineVoice Studio",
+  "description": "Cinematic Bengali emotional voiceover & story-to-speech studio with multi-voice AI directing, audio FX, and master WAV export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
